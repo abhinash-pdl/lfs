@@ -4,6 +4,9 @@
 
 ---
 
+
+---
+
 ## System Specs
 - **CPU/GPU:** Intel (integrated graphics)
 - **Kernel:** Linux 7.0
@@ -48,12 +51,14 @@ In rough order:
 1. PAM
 2. Shadow (with PAM support — critical, see gotcha below)
 3. Systemd recompile (critical, see gotcha below)
-4. Wayland + dependencies
-5. Wayland protocols
-6. Xwayland
-7. Pipewire
-8. Fonts (basics)
-9. NetworkManager (replaced wpa_supplicant)
+4. Mesa (OpenGL/Vulkan userspace drivers — critical, see gotcha below)
+5. Wayland + dependencies
+6. Wayland protocols
+7. Xwayland
+8. Pipewire
+9. Qt Base (built **without** QtWebEngine — see gotcha below)
+10. Fonts (basics)
+11. NetworkManager (replaced wpa_supplicant)
 
 ### Phase 4 — Wayland Desktop
 Following **SLFS (Supplemental Linux From Scratch)** book for Hyprland:
@@ -122,6 +127,42 @@ CONFIG_IWLDVM=y   # or CONFIG_IWLMVM depending on your card
 
 > **Why builtin over module:** As a module it requires initramfs to load firmware early enough. As builtin (`=y`) the driver is always available without initramfs complexity. Simpler and more reliable on LFS.
 
+**Could've also gone the module route.** `CONFIG_IWLWIFI=m` works fine too, and you skip baking the firmware into the kernel binary entirely. Only catch is the firmware then needs to sit at `/lib/firmware/` on the actual root filesystem, and something has to load it early enough at boot — which means getting an initramfs (mkinitcpio, dracut, whatever) set up properly. Went with builtin purely to dodge dealing with initramfs on top of everything else. Module isn't wrong, just more moving parts.
+
+---
+
+### ⚠️ Don't Forget Mesa, or You'll Get Software Rendering and Not Know Why
+Wayland and Hyprland will both compile fine and even run without Mesa in place — which is exactly what makes this annoying. You just end up with software rendering, or Hyprland refusing to give you a proper hardware-accelerated session, and nothing in the build log tells you that's the problem.
+
+The kernel's `i915` driver only gets you hardware detection and mode-setting. The actual OpenGL/Vulkan/EGL implementation that Wayland compositors link against comes from Mesa, in userspace. Kernel driver ≠ graphics driver, basically.
+
+**Compile Mesa before Wayland/Hyprland.** Hyprland's build looks for EGL/GBM at configure time, so if Mesa isn't there yet it'll either fail or silently fall back to something worse.
+
+**What I used for the Intel iGPU:**
+```
+-Dgallium-drivers=iris        # modern Intel Gallium driver
+-Dvulkan-drivers=intel        # ANV Vulkan driver
+-Dplatforms=wayland,x11       # keep x11 too — Xwayland still needs it
+-Degl=enabled
+-Dgbm=enabled
+```
+> `iris` over `i965`: `i965` is the old classic driver, `iris` is the one actually maintained for newer Intel iGPUs and what Wayland/DRI3 expects these days. Don't bother with the legacy one.
+
+---
+
+### ⚠️ Qt Base — Skip QtWebEngine
+**Problem:** Some of the Wayland ecosystem/portal tooling links against Qt Base, but QtWebEngine (Qt's bundled Chromium) is not needed for a lightweight Hyprland setup and adds a massive amount of build time and disk space (it vendors and compiles its own Chromium).
+
+**Build Qt Base with WebEngine explicitly excluded:**
+```bash
+./configure -skip qtwebengine \
+            -no-feature-sql \
+            -opensource -confirm-license
+```
+Or, if building modules individually rather than the full src tree, simply don't build the `qtwebengine` module at all — it's a separate repo/tarball and can just be left out.
+
+> **Why bother excluding it:** QtWebEngine alone can take longer to compile than the rest of the Qt stack combined, and unless something in your stack specifically needs an embedded Chromium view, it's dead weight on an LFS build where every compile is already manual and slow.
+
 ---
 
 ## Kernel Configuration
@@ -182,6 +223,7 @@ Second build was faster, cleaner, and every fix was understood.
 | Audio | Pipewire |
 | Login | TTY (no DM) |
 | Filesystem | XFS |
+| Graphics drivers | Mesa (iris/ANV) |
 
 ---
 
@@ -190,6 +232,11 @@ Second build was faster, cleaner, and every fix was understood.
 - [ ] Document exact Hyprland SLFS build steps
 - [ ] Kernel config file export
 - [ ] Exact BLFS package list with versions
+
+---
+<img width="5600" height="5713" alt="lfs" src="https://github.com/user-attachments/assets/65f171a7-1189-49a1-b5c6-d6ff0293e10b" />
+
+*How everything in this build actually depends on everything else, mapped out so I stop forgetting the order. Solid arrows mean "needs this first," dotted ones are looser — more like "this made that possible" than a hard requirement.*
 
 ---
 
